@@ -19,3 +19,14 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm install
       - run: npm test
+  # [TEST] Hyoid verifier demo: fails while lodash < 4.17.21 (CVE-2021-23337) is present.
+  lodash-regression:
+    name: lodash-regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm install
+      - run: node .github/scripts/lodash-regression.mjs
