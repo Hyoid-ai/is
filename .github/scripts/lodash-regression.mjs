@@ -3,6 +3,7 @@
 // [TEST] Plain Node, no dependencies. Usage: node .github/scripts/lodash-regression.mjs [dir]
 import fs from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 
 const MIN = [4, 17, 21];
 const root = path.resolve(process.argv[2] ?? '.');
@@ -10,7 +11,7 @@ const problems = [];
 let checked = 0;
 
 const parse = v => {
-	const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(v));
+	const m = /(\d+)\.(\d+)\.(\d+)/v.exec(String(v));
 	return m ? m.slice(1, 4).map(Number) : undefined;
 };
 
@@ -76,7 +77,7 @@ for (const f of ['package-lock.json', 'npm-shrinkwrap.json']) {
 // [TEST] 3. pnpm-lock.yaml: keys like "/lodash@4.17.20", "lodash@4.17.20" or "/lodash/4.17.20".
 const pnpm = read('pnpm-lock.yaml');
 if (pnpm !== undefined) {
-	for (const m of pnpm.matchAll(/^\s*['"]?\/?lodash[@/](\d+\.\d+\.\d+)/gm)) {
+	for (const m of pnpm.matchAll(/^\s*['"]?\/?lodash[@\/](\d+\.\d+\.\d+)/gmv)) {
 		check('pnpm-lock.yaml', m[1]);
 	}
 }
@@ -84,7 +85,7 @@ if (pnpm !== undefined) {
 // [TEST] 4. yarn.lock: entry headers starting with lodash@, then their version line.
 const yarn = read('yarn.lock');
 if (yarn !== undefined) {
-	for (const m of yarn.matchAll(/^"?lodash@[^\n]*:\n(?:[ \t]+[^\n]*\n)*?[ \t]+version:?\s+"?(\d+\.\d+\.\d+)/gm)) {
+	for (const m of yarn.matchAll(/^"?lodash@[^\n]*:\n(?:[ \t]+[^\n]*\n)*?[ \t]+version:?\s+"?(\d+\.\d+\.\d+)/gmv)) {
 		check('yarn.lock', m[1]);
 	}
 }
@@ -101,7 +102,7 @@ if (problems.length > 0) {
 		console.error(`  - ${p}`);
 	}
 
-	process.exit(1);
+	process.exitCode = 1;
+} else {
+	console.log(`[TEST] lodash-regression PASS (${checked} lodash reference(s) checked, all >= ${MIN.join('.')})`);
 }
-
-console.log(`[TEST] lodash-regression PASS (${checked} lodash reference(s) checked, all >= ${MIN.join('.')})`);
