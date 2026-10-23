@@ -1,108 +1,193 @@
-// [TEST] Hyoid verifier demo: regression check for CVE-2021-23337.
-// [TEST] Fails if any lodash below 4.17.21 is declared, locked, or installed.
+// [TEST] Hyoid verifier demo: regression check for CVE-2021-23337 (lodash < 4.17.21).
+// [TEST] Intentionally test-only. Resolves, does not parse ranges: it inspects what npm actually
+// [TEST] resolved (package-lock.json, `npm ls lodash --all --json`, and node_modules on disk).
 // [TEST] Plain Node, no dependencies. Usage: node .github/scripts/lodash-regression.mjs [dir]
+// [TEST] Scope and limits: see README.md in this directory.
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import {spawnSync} from 'node:child_process';
 
-const MIN = [4, 17, 21];
-const root = path.resolve(process.argv[2] ?? '.');
-const problems = [];
-let checked = 0;
+const MINIMUM = [4, 17, 21];
+const REGISTRY_TARBALL = 'https://registry.npmjs.org/lodash/-/lodash-';
 
-const parse = v => {
-	const m = /(\d+)\.(\d+)\.(\d+)/v.exec(String(v));
-	return m ? m.slice(1, 4).map(Number) : undefined;
-};
+// [TEST] Minimal strict semver: MAJOR.MINOR.PATCH[-pre][+build]. Anything else is unsafe.
+// [TEST] A prerelease always counts as below the minimum.
+export function isSafeVersion(version) {
+	const match = /^v?(\d+)\.(\d+)\.(\d+)(-[\da-z.\-]+)?(\+[\da-z.\-]+)?$/iv.exec(String(version ?? ''));
+	if (!match) {
+		return false;
+	}
 
-const below = v => {
-	for (let i = 0; i < 3; i++) {
-		if (v[i] !== MIN[i]) {
-			return v[i] < MIN[i];
+	if (match[4]) {
+		return false;
+	}
+
+	const parts = match.slice(1, 4).map(Number);
+	for (let index = 0; index < 3; index++) {
+		if (parts[index] !== MINIMUM[index]) {
+			return parts[index] > MINIMUM[index];
 		}
 	}
 
-	return false;
-};
-
-const check = (where, version) => {
-	checked++;
-	const v = parse(version);
-	// [TEST] Unparseable spec (e.g. "*", git URL) is treated as unsafe; a range's lowest bound must be >= 4.17.21.
-	if (!v || below(v)) {
-		problems.push(`${where}: lodash ${version}`);
-	}
-};
-
-const read = f => {
-	const p = path.join(root, f);
-	return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : undefined;
-};
-
-// [TEST] 1. package.json declared versions.
-const pkg = JSON.parse(read('package.json'));
-for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-	if (pkg[field]?.lodash) {
-		check(`package.json ${field}`, pkg[field].lodash);
-	}
+	return true;
 }
 
-// [TEST] 2. npm lockfiles.
-for (const f of ['package-lock.json', 'npm-shrinkwrap.json']) {
-	const text = read(f);
-	if (text === undefined) {
-		continue;
-	}
+export function scan(root, {npmLs = true} = {}) {
+	const problems = [];
+	let checked = 0;
 
-	const lock = JSON.parse(text);
-	for (const [key, entry] of Object.entries(lock.packages ?? {})) {
-		if (key === 'node_modules/lodash' || key.endsWith('/node_modules/lodash')) {
-			check(`${f} ${key}`, entry.version);
-		}
-	}
-
-	const walk = (deps, trail) => {
-		for (const [name, entry] of Object.entries(deps ?? {})) {
-			if (name === 'lodash') {
-				check(`${f} ${trail}lodash`, entry.version);
-			}
-
-			walk(entry.dependencies, `${trail}${name}>`);
+	const check = (where, version, resolved) => {
+		checked++;
+		if (!isSafeVersion(version)) {
+			problems.push(`${where}: lodash ${version ?? '(no version)'}`);
+		} else if (resolved !== undefined && !String(resolved).startsWith(REGISTRY_TARBALL)) {
+			problems.push(`${where}: lodash from non-registry source ${resolved}`);
 		}
 	};
 
-	walk(lock.dependencies, '');
-}
+	const readJson = file => {
+		const full = path.join(root, file);
+		if (!fs.existsSync(full)) {
+			return undefined;
+		}
 
-// [TEST] 3. pnpm-lock.yaml: keys like "/lodash@4.17.20", "lodash@4.17.20" or "/lodash/4.17.20".
-const pnpm = read('pnpm-lock.yaml');
-if (pnpm !== undefined) {
-	for (const m of pnpm.matchAll(/^\s*['"]?\/?lodash[@\/](\d+\.\d+\.\d+)/gmv)) {
-		check('pnpm-lock.yaml', m[1]);
-	}
-}
+		try {
+			return JSON.parse(fs.readFileSync(full, 'utf8'));
+		} catch {
+			problems.push(`${file}: not valid JSON`);
+			return null;
+		}
+	};
 
-// [TEST] 4. yarn.lock: entry headers starting with lodash@, then their version line.
-const yarn = read('yarn.lock');
-if (yarn !== undefined) {
-	for (const m of yarn.matchAll(/^"?lodash@[^\n]*:\n(?:[ \t]+[^\n]*\n)*?[ \t]+version:?\s+"?(\d+\.\d+\.\d+)/gmv)) {
-		check('yarn.lock', m[1]);
-	}
-}
-
-// [TEST] 5. Installed copy, if present.
-const installed = read('node_modules/lodash/package.json');
-if (installed !== undefined) {
-	check('node_modules/lodash', JSON.parse(installed).version);
-}
-
-if (problems.length > 0) {
-	console.error(`[TEST] lodash-regression FAIL (CVE-2021-23337, need >= ${MIN.join('.')}):`);
-	for (const p of problems) {
-		console.error(`  - ${p}`);
+	// [TEST] 1. Preconditions: a committed package-lock.json is required.
+	const pkg = readJson('package.json');
+	if (pkg === undefined) {
+		problems.push('package.json: missing');
 	}
 
-	process.exitCode = 1;
-} else {
-	console.log(`[TEST] lodash-regression PASS (${checked} lodash reference(s) checked, all >= ${MIN.join('.')})`);
+	if (pkg?.workspaces) {
+		problems.push('package.json: workspaces are out of scope for this check');
+	}
+
+	for (const file of ['pnpm-lock.yaml', 'yarn.lock']) {
+		if (fs.existsSync(path.join(root, file))) {
+			problems.push(`${file}: unsupported lockfile (only package-lock.json is in scope)`);
+		}
+	}
+
+	const lock = readJson('package-lock.json');
+	if (lock === undefined) {
+		problems.push('package-lock.json: missing (a committed lockfile is required)');
+	}
+
+	const shrinkwrap = readJson('npm-shrinkwrap.json');
+
+	// [TEST] 2. Lockfile entries (v2/v3 "packages", v1/v2 "dependencies"), nested and aliased.
+	for (const [file, data] of [['package-lock.json', lock], ['npm-shrinkwrap.json', shrinkwrap]]) {
+		if (!data || typeof data !== 'object') {
+			continue;
+		}
+
+		for (const [key, entry] of Object.entries(data.packages ?? {})) {
+			const isLodash = key.split('node_modules/').at(-1) === 'lodash' || entry?.name === 'lodash';
+			if (key !== '' && isLodash) {
+				check(`${file} ${key}`, entry?.version, entry?.resolved);
+			}
+		}
+
+		const walk = (dependencies, trail) => {
+			for (const [name, entry] of Object.entries(dependencies ?? {})) {
+				const version = String(entry?.version ?? '');
+				if (version.startsWith('npm:lodash@')) {
+					check(`${file} ${trail}${name}`, version.slice('npm:lodash@'.length), entry.resolved);
+				} else if (name === 'lodash') {
+					check(`${file} ${trail}${name}`, entry?.version, entry?.resolved);
+				}
+
+				walk(entry?.dependencies, `${trail}${name}>`);
+			}
+		};
+
+		walk(data.dependencies, '');
+	}
+
+	// [TEST] 3. npm's own resolution. `npm ls` exits non-zero on tree problems; its JSON is still parsed.
+	if (npmLs && fs.existsSync(path.join(root, 'node_modules'))) {
+		const result = spawnSync('npm', ['ls', 'lodash', '--all', '--json'], {cwd: root, encoding: 'utf8', shell: process.platform === 'win32'});
+		let tree;
+		try {
+			tree = JSON.parse(result.stdout);
+		} catch {
+			problems.push(`npm ls: no parseable JSON (exit ${result.status})`);
+		}
+
+		const walkTree = (node, trail) => {
+			for (const [name, child] of Object.entries(node?.dependencies ?? {})) {
+				const isLodash = name === 'lodash' || child?.name === 'lodash' || String(child?.resolved ?? '').startsWith(REGISTRY_TARBALL);
+				if (isLodash) {
+					check(`npm ls ${trail}${name}`, child?.version, child?.resolved);
+				}
+
+				walkTree(child, `${trail}${name}>`);
+			}
+		};
+
+		walkTree(tree, '');
+	}
+
+	// [TEST] 4. Installed copies on disk, any depth, by package name (catches aliases). Symlinks are not followed.
+	const walkModules = directory => {
+		let names;
+		try {
+			names = fs.readdirSync(directory, {withFileTypes: true});
+		} catch {
+			return;
+		}
+
+		for (const dirent of names) {
+			if (!dirent.isDirectory() || dirent.name.startsWith('.')) {
+				continue;
+			}
+
+			const full = path.join(directory, dirent.name);
+			if (dirent.name.startsWith('@')) {
+				walkModules(full);
+				continue;
+			}
+
+			let manifest;
+			try {
+				manifest = JSON.parse(fs.readFileSync(path.join(full, 'package.json'), 'utf8'));
+			} catch {
+				// [TEST] No readable manifest: treated as unnamed.
+				manifest = undefined;
+			}
+
+			if (manifest?.name === 'lodash' || (dirent.name === 'lodash' && !manifest?.name)) {
+				check(path.relative(root, full), manifest?.version);
+			}
+
+			walkModules(path.join(full, 'node_modules'));
+		}
+	};
+
+	walkModules(path.join(root, 'node_modules'));
+
+	return {problems, checked};
+}
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+if (isMain) {
+	const {problems, checked} = scan(path.resolve(process.argv[2] ?? '.'));
+	if (problems.length > 0) {
+		console.error(`[TEST] lodash-regression FAIL (CVE-2021-23337, need >= ${MINIMUM.join('.')}, no prereleases):`);
+		for (const problem of problems) {
+			console.error(`  - ${problem}`);
+		}
+
+		process.exitCode = 1;
+	} else {
+		console.log(`[TEST] lodash-regression PASS (${checked} resolved lodash reference(s), all >= ${MINIMUM.join('.')})`);
+	}
 }

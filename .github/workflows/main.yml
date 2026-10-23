@@ -1,7 +1,12 @@
 name: CI
 on:
-  - push
-  - pull_request
+  push:
+    branches:
+      - main
+  pull_request:
+# [TEST] Hyoid verifier demo: least privilege for the whole workflow.
+permissions:
+  contents: read
 jobs:
   test:
     name: Node.js ${{ matrix.node-version }}
@@ -28,5 +33,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: npm install
+      # [TEST] Self-test fixtures must pass before the real check runs.
+      - run: node .github/scripts/lodash-regression.selftest.mjs
+      # [TEST] Install exactly the committed lockfile, no install scripts. A missing lockfile is reported by the check.
+      - run: if [ -f package-lock.json ]; then npm ci --ignore-scripts; else echo "[TEST] no package-lock.json committed"; fi
       - run: node .github/scripts/lodash-regression.mjs
